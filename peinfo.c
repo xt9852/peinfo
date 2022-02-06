@@ -16,7 +16,7 @@
 #include <CommCtrl.h>
 
 #define SIZEOF(x)               sizeof(x)/sizeof(x[0])
-#define SP(...)                 _stprintf_s(info, SIZEOF(info), __VA_ARGS__)
+#define SP(...)                 _stprintf_s(txt, SIZEOF(txt), __VA_ARGS__)
 
 TCHAR *g_title                  = _T("peinfo");
 HFONT  g_font                   = NULL;
@@ -25,19 +25,66 @@ HWND   g_tree                   = NULL;
 TCHAR  g_section_name[16][16]   = {0};
 
 typedef struct _DATA {
-    UCHAR size;
-    TCHAR *name;
+    UCHAR size;     // 数据项长
+    TCHAR *name;    // 数据项名称
 } DATA, *PDATA;
 
+
 /**
- * \brief   在树中插入DOS头节点
+ * \brief   转成UNCOIDE字符
+ * \param   [in]  TCHAR *dst 目标
+ * \param   [in]  char  *src 源
+ * \return        int
+ */
+void to_unicode(TCHAR *dst, char *src)
+{
+    int dst_len = lstrlen(dst);
+    int src_len = strlen(src);
+
+    for (int i = 0; i < (src_len + 1); i++) // 转成UNCOIDE字符,多加1个结尾
+    {
+        dst[dst_len + i] = src[i];
+    }
+}
+
+/**
+ * \brief   比较地址查找所在的节
+ * \param   [in]  PIMAGE_NT_HEADERS         nt          头节点
+ * \param   [in]  DWORD                     addr        地址
+ * \return        int
+ */
+int search_section(PIMAGE_NT_HEADERS nt, DWORD addr)
+{
+    PIMAGE_OPTIONAL_HEADER32 opt     = (PIMAGE_OPTIONAL_HEADER32)&(nt->OptionalHeader);
+    PIMAGE_SECTION_HEADER    section = (PIMAGE_SECTION_HEADER)(nt + 1);
+
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++)
+    {
+        DWORD size = (section->Misc.VirtualSize + opt->SectionAlignment - 1) /
+                      opt->SectionAlignment * opt->SectionAlignment;
+
+        if (addr >= section->VirtualAddress &&
+            addr <= (section->VirtualAddress + size - 1))
+        {
+            return i;
+        }
+
+        section++;
+    }
+
+    return -1;
+}
+
+/**
+ * \brief   在树中插入DOS节点数据项
  * \param   [in]  HWND      tree    树句柄
+ * \param   [in]  HTREEITEM parent  父节点句柄
  * \param   [in]  UCHAR     *buff   PE文件数据
  * \return  无
  */
-void insert_dos_head(HWND tree, UCHAR *buff)
+void insert_dos_head(HWND tree, HTREEITEM parent, UCHAR *buff)
 {
-    DATA name[] = {
+    DATA data_item[] = {
         { 2,  _T("可执行文件标记                 ")},
         { 2,  _T("文件最后页的字节数             ")},
         { 2,  _T("文件页数                       ")},
@@ -59,35 +106,39 @@ void insert_dos_head(HWND tree, UCHAR *buff)
         { 4,  _T("指向PE文件头的偏移量           ")}
     };
 
-    int fa            = 0; // 文件地址
-    TCHAR info[128]   = _T("0000 DOS");
+    TCHAR txt[128]    = _T("");
+
     TVINSERTSTRUCT tv = {0};
-    tv.hParent        = TVI_ROOT;
+    tv.hParent        = parent;
     tv.hInsertAfter   = TVI_LAST;
     tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
-    tv.hParent = TreeView_InsertItem(tree, &tv);
+    tv.item.pszText   = txt;
 
-    // 插入DOS头数据
-    for (int i = 0; i < SIZEOF(name); i++)
+    int    fa         = 0; // DOS头节点在exe文件中的位置
+    TCHAR *name       = 0;
+    UCHAR  size       = 0;
+
+    // 插入DOS头数据项
+    for (int i = 0; i < SIZEOF(data_item); i++)
     {
-        if (2 == name[i].size)
+        name = data_item[i].name;
+        size = data_item[i].size;
+
+        if (2 == size)  // 2字节数据项
         {
-            SP(_T("%04x %s : %04x"), fa, name[i].name, *(WORD*)(buff + fa));
+            SP(_T("%04x %s : %04x"), fa, name, *(WORD*)(buff + fa));
         }
-        else if (4 == name[i].size)
+        else if (4 == size)
         {
-            SP(_T("%04x %s : %08x"), fa, name[i].name, *(DWORD*)(buff + fa));
+            SP(_T("%04x %s : %08x"), fa, name, *(DWORD*)(buff + fa));
         }
-        else if (8 == name[i].size)
+        else if (8 == size)
         {
-            SP(_T("%04x %s : %08x%08x"), fa, name[i].name,
-                *(DWORD*)(buff + fa),
-                *(DWORD*)(buff + fa + 4));
+            SP(_T("%04x %s : %08x%08x"), fa, name, *(DWORD*)(buff + fa), *(DWORD*)(buff + fa + 4));
         }
         else
         {
-            SP(_T("%04x %s : %08x%08x%08x%08x%08x"), fa, name[i].name,
+            SP(_T("%04x %s : %08x%08x%08x%08x%08x"), fa, name,
                 *(DWORD*)(buff + fa),
                 *(DWORD*)(buff + fa + 4),
                 *(DWORD*)(buff + fa + 8),
@@ -96,12 +147,13 @@ void insert_dos_head(HWND tree, UCHAR *buff)
         }
 
         TreeView_InsertItem(tree, &tv);
-        fa += name[i].size;
+
+        fa += size;
     }
 }
 
 /**
- * \brief   在树中插入FILE头节点
+ * \brief   在树中插入FILE节点数据项
  * \param   [in]  HWND      tree    树句柄
  * \param   [in]  HTREEITEM parent  父节点句柄
  * \param   [in]  UCHAR     *buff   PE文件数据
@@ -109,7 +161,9 @@ void insert_dos_head(HWND tree, UCHAR *buff)
  */
 void insert_file_head(HWND tree, HTREEITEM parent, UCHAR *buff)
 {
-    DATA name[] = {
+    TCHAR txt[128];
+
+    DATA data_item[] = {
         { 2, _T("可执行文件的目标CPU类型        ")},
         { 2, _T("PE文件的节区的个数             ")},
         { 4, _T("文件创建时间                   ")},
@@ -123,32 +177,38 @@ void insert_file_head(HWND tree, HTREEITEM parent, UCHAR *buff)
     PIMAGE_NT_HEADERS  nt   = (PIMAGE_NT_HEADERS)(buff + dos->e_lfanew);
     PIMAGE_FILE_HEADER file = (PIMAGE_FILE_HEADER)&(nt->FileHeader);
 
-    int fa = (UCHAR*)file - buff;
-    TCHAR info[128];
-    TVINSERTSTRUCT tv = {0};
-    tv.hParent        = parent;
-    tv.hInsertAfter   = TVI_LAST;
-    tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    TVINSERTSTRUCT tv       = {0};
+    tv.hParent              = parent;
+    tv.hInsertAfter         = TVI_LAST;
+    tv.item.mask            = TVIF_TEXT;
+    tv.item.pszText         = txt;
 
-    for (int i = 0; i < SIZEOF(name); i++)
+    int    fa               = (UCHAR*)file - buff; // FILE头节点在exe文件中的位置
+    TCHAR *name             = 0;
+    UCHAR  size             = 0;
+
+    for (int i = 0; i < SIZEOF(data_item); i++)
     {
-        if (2 == name[i].size)
+        name = data_item[i].name;
+        size = data_item[i].size;
+
+        if (2 == size)  // 2字节数据项
         {
-            SP(_T("%04x %s : %04x"), fa, name[i].name, *(WORD*)(buff + fa));
+            SP(_T("%04x %s : %04x"), fa, name, *(WORD*)(buff + fa));
         }
         else
         {
-            SP(_T("%04x %s : %08x"), fa, name[i].name, *(DWORD*)(buff + fa));
+            SP(_T("%04x %s : %08x"), fa, name, *(DWORD*)(buff + fa));
         }
 
         TreeView_InsertItem(tree, &tv);
-        fa += name[i].size;
+
+        fa += size;
     }
 }
 
 /**
- * \brief   在树中插入OPTION头节点
+ * \brief   在树中插入OPTION节点数据项
  * \param   [in]  HWND      tree    树句柄
  * \param   [in]  HTREEITEM parent  父节点句柄
  * \param   [in]  UCHAR     *buff   PE文件数据
@@ -156,7 +216,7 @@ void insert_file_head(HWND tree, HTREEITEM parent, UCHAR *buff)
  */
 void insert_option_head(HWND tree, HTREEITEM parent, UCHAR *buff)
 {
-    DATA name[] = {
+    DATA data_item[] = {
         { 2, _T("文件的状态类型                    ")},
         { 1, _T("主链接版本号                      ")},
         { 1, _T("次链接版本号                      ")},
@@ -225,76 +285,89 @@ void insert_option_head(HWND tree, HTREEITEM parent, UCHAR *buff)
     PIMAGE_NT_HEADERS        nt  = (PIMAGE_NT_HEADERS)(buff + dos->e_lfanew);
     PIMAGE_OPTIONAL_HEADER32 opt = (PIMAGE_OPTIONAL_HEADER32)&(nt->OptionalHeader);
 
-    int fa = (UCHAR*)opt - buff;
-    TCHAR info[128];
-    TVINSERTSTRUCT tv = {0};
-    tv.hParent        = parent;
-    tv.hInsertAfter   = TVI_LAST;
-    tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    TCHAR txt[128]               = _T("");
 
-    for (int i = 0; i < SIZEOF(name); i++)
+    TVINSERTSTRUCT tv            = {0};
+    tv.hParent                   = parent;
+    tv.hInsertAfter              = TVI_LAST;
+    tv.item.mask                 = TVIF_TEXT;
+    tv.item.pszText              = txt;
+
+    int    fa                    = (UCHAR*)opt - buff; // OPTION头节点在exe文件中的位置
+    TCHAR *name                  = 0;
+    UCHAR  size                  = 0;
+
+    for (int i = 0; i < SIZEOF(data_item); i++)
     {
-        if (1 == name[i].size)
+        name = data_item[i].name;
+        size = data_item[i].size;
+
+        if (1 == size)  // 1字节数据项
         {
-            SP(_T("%04x %s : %02x"), fa, name[i].name, *(BYTE*)(buff + fa));
+            SP(_T("%04x %s : %02x"), fa, name, *(BYTE*)(buff + fa));
         }
-        else if (2 == name[i].size)
+        else if (2 == size)
         {
-            SP(_T("%04x %s : %04x"), fa, name[i].name, *(WORD*)(buff + fa));
+            SP(_T("%04x %s : %04x"), fa, name, *(WORD*)(buff + fa));
         }
         else
         {
-            SP(_T("%04x %s : %08x"), fa, name[i].name, *(DWORD*)(buff + fa));
+            SP(_T("%04x %s : %08x"), fa, name, *(DWORD*)(buff + fa));
         }
 
         TreeView_InsertItem(tree, &tv);
-        fa += name[i].size;
+
+        fa += size;
     }
 }
 
 /**
- * \brief   在树中插入NT头节点
+ * \brief   在树中插入DOS,NT,FILE,OPTION头节点和数据项节点
  * \param   [in]  HWND      tree    树句柄
  * \param   [in]  UCHAR     *buff   PE文件数据
  * \return  无
  */
-void insert_nt_head(HWND tree, UCHAR *buff)
+void insert_dosnt_head(HWND tree, UCHAR *buff)
 {
+    TCHAR txt[128];
+
     PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)buff;
     PIMAGE_NT_HEADERS nt  = (PIMAGE_NT_HEADERS)(buff + dos->e_lfanew);
 
-    TCHAR info[128];
-    TVINSERTSTRUCT tv = {0};
-    tv.hParent        = TVI_ROOT;
-    tv.hInsertAfter   = TVI_LAST;
-    tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    TVINSERTSTRUCT tv     = {0};
+    tv.hParent            = TVI_ROOT;
+    tv.hInsertAfter       = TVI_LAST;
+    tv.item.mask          = TVIF_TEXT;
+    tv.item.pszText       = txt;
 
-    SP(_T("%04x NT头标记 : %08x"), dos->e_lfanew, nt->Signature);
+    SP(_T("0000 IMAGE_DOS_HEADER"));
+    HTREEITEM top = TreeView_InsertItem(tree, &tv);
+
+    SP(_T("%04x IMAGE_NT_HEADERS : %08x"), dos->e_lfanew, nt->Signature);
     TreeView_InsertItem(tree, &tv);
 
-    SP(_T("%04x FILE"), dos->e_lfanew + 4);
+    SP(_T("%04x IMAGE_FILE_HEADER"), dos->e_lfanew + 4);
     HTREEITEM file = TreeView_InsertItem(tree, &tv);
 
-    SP(_T("%04x OPTION"), dos->e_lfanew + 24);
+    SP(_T("%04x IMAGE_OPTIONAL_HEADER32"), dos->e_lfanew + 24);
     HTREEITEM option = TreeView_InsertItem(tree, &tv);
 
+    insert_dos_head(tree, top, buff);
     insert_file_head(tree, file, buff);
     insert_option_head(tree, option, buff);
 }
 
 /**
- * \brief   在树中插入SECTION信息节点
+ * \brief   在树中插入段信息数据项
  * \param   [in]  HWND      tree    树句柄
  * \param   [in]  HTREEITEM parent  父节点句柄
  * \param   [in]  UCHAR     *buff   PE文件数据
  * \param   [in]  int       id      SECTION的序号
  * \return  无
  */
-void insert_section_info(HWND tree, HTREEITEM parent, UCHAR *buff, int id)
+void insert_section_data(HWND tree, HTREEITEM parent, UCHAR *buff, int id)
 {
-    DATA name[] = {
+    DATA data_item[] = {
         { 8, _T("节名称                       ")},
         { 4, _T("被实际使用的区块大小         ")},
         { 4, _T("区块的相对虚拟地址           ")},
@@ -310,31 +383,42 @@ void insert_section_info(HWND tree, HTREEITEM parent, UCHAR *buff, int id)
     PIMAGE_DOS_HEADER  dos  = (PIMAGE_DOS_HEADER)buff;
     PIMAGE_NT_HEADERS  nt   = (PIMAGE_NT_HEADERS)(buff + dos->e_lfanew);
 
-    int fa = dos->e_lfanew + sizeof(IMAGE_NT_HEADERS) + id * sizeof(IMAGE_SECTION_HEADER);
-    TCHAR info[128];
-    TVINSERTSTRUCT tv = {0};
-    tv.hParent        = parent;
-    tv.hInsertAfter   = TVI_LAST;
-    tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    TCHAR txt[128]          = _T("");
 
-    for (int i = 0; i < SIZEOF(name); i++)
+    TVINSERTSTRUCT tv       = {0};
+    tv.hParent              = parent;
+    tv.hInsertAfter         = TVI_LAST;
+    tv.item.mask            = TVIF_TEXT;
+    tv.item.pszText         = txt;
+
+    int fa                  = dos->e_lfanew +
+                              sizeof(IMAGE_NT_HEADERS) +
+                              id * sizeof(IMAGE_SECTION_HEADER); // 该段头在exe文件中的位置
+
+    TCHAR *name             = 0;
+    UCHAR  size             = 0;
+
+    for (int i = 0; i < SIZEOF(data_item); i++)
     {
-        if (2 == name[i].size)
+        name = data_item[i].name;
+        size = data_item[i].size;
+
+        if (2 == size)  // 2字节数据项
         {
-            SP(_T("%04x %s : %04x"), fa, name[i].name, *(WORD*)(buff + fa));
+            SP(_T("%04x %s : %04x"), fa, name, *(WORD*)(buff + fa));
         }
-        else if (4 == name[i].size)
+        else if (4 == size)
         {
-            SP(_T("%04x %s : %08x"), fa, name[i].name, *(DWORD*)(buff + fa));
+            SP(_T("%04x %s : %08x"), fa, name, *(DWORD*)(buff + fa));
         }
         else
         {
-            SP(_T("%04x %s : %s"), fa, name[i].name, g_section_name[id]);
+            SP(_T("%04x %s : %s"), fa, name, g_section_name[id]);
         }
 
         TreeView_InsertItem(tree, &tv);
-        fa += name[i].size;
+
+        fa += size;
     }
 }
 
@@ -349,130 +433,103 @@ void insert_section_head(HWND tree, UCHAR *buff)
     PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)buff;
     PIMAGE_NT_HEADERS nt  = (PIMAGE_NT_HEADERS)(buff + dos->e_lfanew);
 
-    int fa = dos->e_lfanew + sizeof(IMAGE_NT_HEADERS);
-    TCHAR info[128];
-    HTREEITEM node;
-    TVINSERTSTRUCT tv = {0};
-    tv.hParent        = TVI_ROOT;
-    tv.hInsertAfter   = TVI_LAST;
-    tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    TCHAR txt[128]        = _T("");
+    HTREEITEM sub         = NULL;
+
+    TVINSERTSTRUCT tv     = {0};
+    tv.hParent            = TVI_ROOT;
+    tv.hInsertAfter       = TVI_LAST;
+    tv.item.mask          = TVIF_TEXT;
+    tv.item.pszText       = txt;
+
+    int fa                = dos->e_lfanew + sizeof(IMAGE_NT_HEADERS); // 第1个段头在exe文件中的位置
 
     for (int i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
-        char *src = (buff + fa);
-        TCHAR *des = g_section_name[i];
+        to_unicode(g_section_name[i], buff + fa); // 将段名转成UNICODE
 
-        for (int j = 0; j < 8; j ++)
-        {
-            des[j] = src[j];
-        }
+        SP(_T("%04x IMAGE_SECTION_HEADER %s"), fa, g_section_name[i]);
 
-        SP(_T("%04x %s"), fa, g_section_name[i]);
-        node = TreeView_InsertItem(tree, &tv);
+        sub = TreeView_InsertItem(tree, &tv);
 
         fa += sizeof(IMAGE_SECTION_HEADER);
 
-        insert_section_info(tree, node, buff, i);
+        insert_section_data(tree, sub, buff, i);
     }
-}
-
-/**
- * \brief   比较地址查找所在的节
- * \param   [in]  PIMAGE_NT_HEADERS         nt          头节点
- * \param   [in]  DWORD                     addr        地址
- * \return        int
- */
-int search_section(PIMAGE_NT_HEADERS nt, DWORD addr)
-{
-    PIMAGE_OPTIONAL_HEADER32 opt     = (PIMAGE_OPTIONAL_HEADER32)&(nt->OptionalHeader);
-    PIMAGE_SECTION_HEADER    section = (PIMAGE_SECTION_HEADER)(nt + 1);
-
-    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++)
-    {
-        DWORD size = (section->Misc.VirtualSize + opt->SectionAlignment - 1) /
-                      opt->SectionAlignment * opt->SectionAlignment;
-
-        if (addr >= section->VirtualAddress &&
-            addr <= (section->VirtualAddress + size - 1))
-        {
-            return i;
-        }
-
-        section++;
-    }
-
-    return -1;
 }
 
 /**
  * \brief   在树中插入重定位数据块信息节点
- * \param   [in]  HWND                      tree        树句柄
- * \param   [in]  HTREEITEM                 parent      树节点句柄
- * \param   [in]  UCHAR                     *buff       PE文件数据
- * \param   [in]  PIMAGE_SECTION_HEADER     section     头节点
- * \param   [in]  PIMAGE_BASE_RELOCATION    block       头节点
- * \param   [in]  DWORD                     fa          文件地址
- * \param   [in]  DWORD                     va          相对地址
- * \param   [in]  int                       block_id    块序号
- * \param   [in]  int                       section_id  块所在节
+ * \param   [in]  HWND                      tree            树句柄
+ * \param   [in]  HTREEITEM                 parent          树节点句柄
+ * \param   [in]  UCHAR                     *buff           PE文件数据
+ * \param   [in]  PIMAGE_BASE_RELOCATION    block           数据块头节点
+ * \param   [in]  PIMAGE_SECTION_HEADER     section         数据块所在段头节点
+ * \param   [in]  int                       section_name    数据块所在段名称
+ * \param   [in]  DWORD                     fa              重定位块头在文件地址
+ * \param   [in]  DWORD                     va              相对地址
+ * \param   [in]  int                       block_id        块序号
  * \return  无
  */
 void insert_reloc_block(HWND tree, HTREEITEM parent, UCHAR *buff,
-                        PIMAGE_SECTION_HEADER section,
                         PIMAGE_BASE_RELOCATION block,
+                        PIMAGE_SECTION_HEADER section,
+                        TCHAR *section_name,
                         DWORD fa, DWORD va,
-                        int block_id, int section_id)
+                        int block_id)
 {
-    // 相对于节数据开始位置
-    DWORD offset = block->VirtualAddress - section->VirtualAddress;
+    TCHAR txt[128]   = _T("");
 
-    // 数据数量
-    DWORD count = (block->SizeOfBlock - 8) / 2;
-
-    TCHAR info[128];
     TVINSERTSTRUCT tv = {0};
     tv.hParent        = parent;
     tv.hInsertAfter   = TVI_LAST;
     tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    tv.item.pszText   = txt;
+
+    DWORD count       = (block->SizeOfBlock - 8) / 2; // 数据项数量
 
     SP(_T("%08x %08x 块:%02x 页:%08x 大小:%04x 数量:%02x 节:%08x %08x %s"),
        fa, fa + va, block_id,
        block->VirtualAddress, block->SizeOfBlock, count,
-       section->PointerToRawData, section->VirtualAddress, g_section_name[section_id]);
+       section->PointerToRawData, section->VirtualAddress, section_name);
 
-    tv.hParent = TreeView_InsertItem(tree, &tv);
+    tv.hParent        = TreeView_InsertItem(tree, &tv);
 
-    // 数据位置
-    fa += sizeof(IMAGE_BASE_RELOCATION);
-    WORD *data = (WORD*)(buff + fa);
-    DWORD fa_data;
+    fa               += sizeof(IMAGE_BASE_RELOCATION); // 重定位数据项在exe文件中的位置
+
+    WORD *list        = (WORD*)(buff + fa);
+
+    WORD  type;
+    WORD  addr;
+    DWORD addr_fa;
+    DWORD addr_va;
 
     for (UINT j = 0; j < count; j++)
     {
-        WORD addr = (*data) & 0x0fff;
-        WORD type = (*data) >> 12;
+        addr = (*list) & 0x0fff;    // 重定位数据指向的地址,只需要低12位
+        type = (*list) >> 12;       // 高4位为类型:0-对齐,3-需要修正的数据
 
-        fa_data = section->PointerToRawData + offset + addr;
+        addr_va = block->VirtualAddress - section->VirtualAddress + addr;
+        addr_fa = section->PointerToRawData + addr_va;
 
         SP(_T("%08x %08x 地址:%04x 类型:%x 节内位置:%08x %08x 数据:%08x"),
            fa, fa + va, addr, type,
-           fa_data, offset + addr, *(DWORD*)(buff + fa_data));
+           addr_fa, addr_va, *(DWORD*)(buff + addr_fa));
 
         TreeView_InsertItem(tree, &tv);
+
         fa += 2;
-        data++;
+        list++;
     }
 }
 
 /**
- * \brief   在树中插入重定位信息节点
+ * \brief   在树中插入重定位信息节点,重定位表/重定位数据块/重定位数据项,共3层
  * \param   [in]  HWND                      tree        树句柄
  * \param   [in]  UCHAR                     *buff       PE文件数据
  * \return  无
  */
-void insert_reloc_info(HWND tree, UCHAR *buff)
+void insert_reloc_table(HWND tree, UCHAR *buff)
 {
     PIMAGE_DOS_HEADER        dos          = (PIMAGE_DOS_HEADER)buff;
     PIMAGE_NT_HEADERS        nt           = (PIMAGE_NT_HEADERS)(buff + dos->e_lfanew);
@@ -481,16 +538,24 @@ void insert_reloc_info(HWND tree, UCHAR *buff)
     PIMAGE_SECTION_HEADER    section;
     PIMAGE_BASE_RELOCATION   block;
 
-    DWORD fa;   // 文件位置
-    DWORD va = opt->DataDirectory[5].VirtualAddress;
+    TCHAR txt[128]                        = _T("");
+    HTREEITEM item                        = NULL;
+
+    TVINSERTSTRUCT tv                     = {0};
+    tv.hParent                            = TVI_ROOT;
+    tv.hInsertAfter                       = TVI_LAST;
+    tv.item.mask                          = TVIF_TEXT;
+    tv.item.pszText                       = txt;
+
+    DWORD fa;                                           // 重定位表在exe文件中的位置
+    DWORD va = opt->DataDirectory[5].VirtualAddress;    // 重定位表在内存中的位置
 
     if (0 == va)
     {
         return; // 没有重定位表
     }
 
-    // 查找重定位表所在节
-    int section_id = search_section(nt, va);
+    int section_id = search_section(nt, va);    // 查找重定位表所在段,一般在.rdata
 
     if (section_id < 0)
     {
@@ -498,19 +563,10 @@ void insert_reloc_info(HWND tree, UCHAR *buff)
     }
 
     section = &section_list[section_id];
-    fa = section->PointerToRawData +
-         opt->DataDirectory[5].VirtualAddress -
-         section->VirtualAddress;
 
-    va -= fa;   // 相对位置
+    fa = section->PointerToRawData + opt->DataDirectory[5].VirtualAddress - section->VirtualAddress;
 
-    TCHAR info[128];
-    HTREEITEM item;
-    TVINSERTSTRUCT tv = {0};
-    tv.hParent        = TVI_ROOT;
-    tv.hInsertAfter   = TVI_LAST;
-    tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    va -= fa;   // 内存位置与文件位置的偏移
 
     SP(_T("%08x %08x 重定位 所在节:%08x %08x %s"), fa, fa + va,
        section->PointerToRawData, section->VirtualAddress, g_section_name[section_id]);
@@ -519,24 +575,25 @@ void insert_reloc_info(HWND tree, UCHAR *buff)
 
     for (int i = 0; ; i++)
     {
-        block = (PIMAGE_BASE_RELOCATION)(buff + fa);
+        block = (PIMAGE_BASE_RELOCATION)(buff + fa); // 块数据长度不定
 
         if (0 == block->VirtualAddress || 0 == block->SizeOfBlock)
         {
             break;
         }
 
-        // 查找重定位表数据块所在的节
+        // 查找重定位数据块所在的段
         section_id = search_section(nt, block->VirtualAddress);
 
         if (section_id < 0)
         {
-            MessageBox(NULL, _T("search_section"), g_title, MB_ICONEXCLAMATION);
+            MessageBox(NULL, _T("search_section"), g_title, MB_OK);
             return; // 出错
         }
 
-        insert_reloc_block(tree, item, buff, &section_list[section_id], block,
-                           fa, va, i, section_id);
+        insert_reloc_block(tree, item, buff, block,
+                           &section_list[section_id], g_section_name[section_id],
+                           fa, va, i);
 
         fa += block->SizeOfBlock;
     }
@@ -549,48 +606,41 @@ void insert_reloc_info(HWND tree, UCHAR *buff)
  * \param   [in]  UCHAR                     *buff               PE文件数据
  * \param   [in]  PIMAGE_SECTION_HEADER     section             头节点
  * \param   [in]  PIMAGE_EXPORT_DIRECTORY   export              头节点
- * \param   [in]  DWORD                     name_ptr_list_addr  函数名指针列表地址
+ * \param   [in]  DWORD                     name_addr_list_addr 函数名指针列表地址
  * \param   [in]  DWORD                     va                  相对地址
  * \return  无
  */
 void insert_export_name(HWND tree, HTREEITEM parent, UCHAR *buff,
                         PIMAGE_SECTION_HEADER section,
                         PIMAGE_EXPORT_DIRECTORY export,
-                        DWORD name_ptr_list_addr,
+                        DWORD name_addr_list_addr,
                         DWORD va)
 {
-    TCHAR info[128];
+    TCHAR txt[128]    = _T("");
+
     TVINSERTSTRUCT tv = {0};
     tv.hParent        = parent;
     tv.hInsertAfter   = TVI_LAST;
     tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    tv.item.pszText   = txt;
 
-    DWORD fa = section->PointerToRawData + name_ptr_list_addr - section->VirtualAddress;
-    DWORD *list = (DWORD*)(buff + fa);
-    DWORD name_addr;
-    DWORD name_fa;
+    // 导出函数名列表在exe文件中的位置
+    DWORD fa          = section->PointerToRawData + name_addr_list_addr - section->VirtualAddress;
+    DWORD *list       = (DWORD*)(buff + fa);
+    DWORD name_va     = 0;
+    DWORD name_fa     = 0;
 
     for (UINT i = 0; i < export->NumberOfNames; i++)
     {
-        name_addr = *list++;
-        name_fa = section->PointerToRawData + name_addr - section->VirtualAddress;
+        name_va = list[i];
+        name_fa = section->PointerToRawData + name_va - section->VirtualAddress;
 
-        SP(_T("%08x %08x 名称:%08x %08x "), fa, fa + va, name_fa, name_addr);
+        SP(_T("%08x %08x 名称:%08x %08x "), fa, fa + va, name_fa, name_va);
 
-        char *name = (char*)(buff + section->PointerToRawData +
-                             name_addr -
-                             section->VirtualAddress);
-
-        int info_len = lstrlen(info);
-        int name_len = strlen(name);
-
-        for (int i = 0; i < (name_len + 1); i++) // 多加1个结尾
-        {
-            info[info_len + i] = name[i];
-        }
+        to_unicode(txt, buff + name_fa);
 
         TreeView_InsertItem(tree, &tv);
+
         fa += 4;
     }
 }
@@ -612,20 +662,25 @@ void insert_export_id(HWND tree, HTREEITEM parent, UCHAR *buff,
                       DWORD id_list_addr,
                       DWORD va)
 {
-    TCHAR info[128];
+    TCHAR txt[128];
     TVINSERTSTRUCT tv = {0};
     tv.hParent        = parent;
     tv.hInsertAfter   = TVI_LAST;
     tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    tv.item.pszText   = txt;
 
-    DWORD fa = section->PointerToRawData + id_list_addr - section->VirtualAddress;
-    WORD *list = (WORD*)(buff + fa);
+    // 导出函数ID列表在exe文件中的位置
+    DWORD fa          = section->PointerToRawData + id_list_addr - section->VirtualAddress;
+    WORD *list        = (WORD*)(buff + fa);
 
     for (UINT i = 0; i < export->NumberOfFunctions; i++)
     {
+        // Base函数序号开始值
         SP(_T("%08x %08x ID:%04x 序号:%04x"), fa, fa + va, list[i], export->Base + list[i]);
+
         TreeView_InsertItem(tree, &tv);
+
+        fa += 4;
     }
 }
 
@@ -640,29 +695,30 @@ void insert_export_id(HWND tree, HTREEITEM parent, UCHAR *buff,
  * \param   [in]  DWORD                     va                          相对地址
  * \return  无
  */
-void insert_export_function(HWND tree, HTREEITEM parent, UCHAR *buff,
-                            PIMAGE_SECTION_HEADER section,
-                            PIMAGE_EXPORT_DIRECTORY export,
-                            DWORD function_addr_list_addr,
-                            DWORD va)
+void insert_export_func(HWND tree, HTREEITEM parent, UCHAR *buff,
+                        PIMAGE_SECTION_HEADER section,
+                        PIMAGE_EXPORT_DIRECTORY export,
+                        DWORD func_addr_list_addr,
+                        DWORD va)
 {
-    TCHAR info[128];
+    TCHAR txt[128]    = _T("");
+
     TVINSERTSTRUCT tv = {0};
     tv.hParent        = parent;
     tv.hInsertAfter   = TVI_LAST;
     tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    tv.item.pszText   = txt;
 
-    DWORD fa = section->PointerToRawData +
-               function_addr_list_addr -
-               section->VirtualAddress;
-
-    DWORD *data = (DWORD*)(buff + fa);
+    // 导出函数指针列表在exe文件中的位置
+    DWORD fa          = section->PointerToRawData + func_addr_list_addr - section->VirtualAddress;
+    DWORD *list       = (DWORD*)(buff + fa);
 
     for (UINT i = 0; i < export->NumberOfNames; i++)
     {
-        SP(_T("%08x %08x 函数地址:%08x"), fa, fa + va, *data);
+        SP(_T("%08x %08x 函数地址:%08x"), fa, fa + va, list[i]);
+
         TreeView_InsertItem(tree, &tv);
+
         fa += 4;
     }
 }
@@ -673,9 +729,9 @@ void insert_export_function(HWND tree, HTREEITEM parent, UCHAR *buff,
  * \param   [in]  UCHAR     *buff       PE文件数据
  * \return  无
  */
-void insert_export_info(HWND tree, UCHAR *buff)
+void insert_export_table(HWND tree, UCHAR *buff)
 {
-    DATA name[] = {
+    DATA data_item[] = {
         { 4, _T("主链接版本号                      ")},
         { 4, _T("文件创建时间                      ")},
         { 2, _T("主链接版本号                      ")},
@@ -695,16 +751,15 @@ void insert_export_info(HWND tree, UCHAR *buff)
     PIMAGE_SECTION_HEADER    section = (PIMAGE_SECTION_HEADER)(nt + 1);
     PIMAGE_EXPORT_DIRECTORY  export;
 
-    DWORD fa;   // 文件位置
-    DWORD va = opt->DataDirectory[0].VirtualAddress;
+    DWORD fa;                                           // 导出表在exe文件中的位置
+    DWORD va = opt->DataDirectory[0].VirtualAddress;    // 导出表在内存中的位置
 
     if (0 == va)
     {
         return; // 没有导出表
     }
 
-    // 查找导出表数据所在节
-    int section_id = search_section(nt, va);
+    int section_id = search_section(nt, va);    // 查找导出表数据所在节,一般在.edata
 
     if (section_id < 0)
     {
@@ -712,39 +767,45 @@ void insert_export_info(HWND tree, UCHAR *buff)
     }
 
     section = &section[section_id];
-    fa = section->PointerToRawData +
-         opt->DataDirectory[0].VirtualAddress -
-         section->VirtualAddress;
-    va -= fa;   // 相对位置
 
-    TCHAR info[128];
-    HTREEITEM item1;
-    HTREEITEM item2;
+    fa = section->PointerToRawData + opt->DataDirectory[0].VirtualAddress - section->VirtualAddress;
+
+    va -= fa;   // 内存位置与文件位置的偏移
+
+    TCHAR txt[128]    = _T("");
+    HTREEITEM sub     = NULL;
+    HTREEITEM subsub  = NULL;
+
     TVINSERTSTRUCT tv = {0};
     tv.hParent        = TVI_ROOT;
     tv.hInsertAfter   = TVI_LAST;
     tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    tv.item.pszText   = txt;
 
     SP(_T("%08x %08x 导出表 所在节:%08x %08x %s"), fa, fa + va,
        section->PointerToRawData, section->VirtualAddress, g_section_name[section_id]);
 
-    item1 = TreeView_InsertItem(tree, &tv);
+    sub = TreeView_InsertItem(tree, &tv);
 
-    export = (PIMAGE_EXPORT_DIRECTORY)(buff + fa);
+    export = (PIMAGE_EXPORT_DIRECTORY)(buff + fa); // 导出表头节点
 
-    DWORD data;
+    DWORD  data;
+    TCHAR *name;
+    UCHAR  size;
 
-    for (int i = 0; i < SIZEOF(name); i++)
+    for (int i = 0; i < SIZEOF(data_item); i++)
     {
-        if (2 == name[i].size)
+        name = data_item[i].name;
+        size = data_item[i].size;
+
+        if (2 == size)
         {
-            SP(_T("%08x %08x %s :%04x"), fa, fa + va, name[i].name, *(WORD*)(buff + fa));
+            SP(_T("%08x %08x %s :%04x"), fa, fa + va, name, *(WORD*)(buff + fa));
         }
         else
         {
             data = *(DWORD*)(buff + fa);
-            SP(_T("%08x %08x %s :%08x"), fa, fa + va, name[i].name, data);
+            SP(_T("%08x %08x %s :%08x "), fa, fa + va, name, data);
         }
 
         if (4 == i) // 名字
@@ -752,34 +813,26 @@ void insert_export_info(HWND tree, UCHAR *buff)
             char *name = (char*)(buff + section->PointerToRawData + export->Name -
                                 section->VirtualAddress);
 
-            int info_len = lstrlen(info);
-            int name_len = strlen(name);
-
-            info[info_len] = _T(' ');
-
-            for (int i = 0; i < (name_len + 1); i++) // 多加1个结尾
-            {
-                info[info_len + i + 1] = name[i];
-            }
+            to_unicode(txt, name);
         }
 
-        tv.hParent = item1;
-        item2 = TreeView_InsertItem(tree, &tv);
+        tv.hParent = sub;
+        subsub = TreeView_InsertItem(tree, &tv);
 
         if (8 == i) // 导出函数表
         {
-            insert_export_function(tree, item2, buff, section, export, data, va);
+            insert_export_func(tree, subsub, buff, section, export, data, va);
         }
         else if (9 == i) // 导出函数名表
         {
-            insert_export_name(tree, item2, buff, section, export, data, va);
+            insert_export_name(tree, subsub, buff, section, export, data, va);
         }
         else if (10 == i) // 导出函数序号表
         {
-            insert_export_id(tree, item2, buff, section, export, data, va);
+            insert_export_id(tree, subsub, buff, section, export, data, va);
         }
 
-        fa += name[i].size;
+        fa += size;
     }
 }
 
@@ -796,45 +849,45 @@ void insert_export_info(HWND tree, UCHAR *buff)
 void insert_import_thunk(HWND tree, HTREEITEM parent, UCHAR *buff,
                          PIMAGE_SECTION_HEADER section,
                          DWORD thunk_list_addr,
-                         DWORD va, char *n)
+                         DWORD va)
 {
-    TCHAR info[512];
-    HTREEITEM item;
-    TVINSERTSTRUCT tv = {0};
-    tv.hInsertAfter   = TVI_LAST;
-    tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    TCHAR txt[512]           = _T("");
+    HTREEITEM item            = NULL;
 
-    DWORD fa = section->PointerToRawData + thunk_list_addr - section->VirtualAddress;
+    TVINSERTSTRUCT tv         = {0};
+    tv.hInsertAfter           = TVI_LAST;
+    tv.item.mask              = TVIF_TEXT;
+    tv.item.pszText           = txt;
+
+    DWORD fa                  = section->PointerToRawData +
+                                thunk_list_addr -
+                                section->VirtualAddress;    // 导入表thunk列表在exe文件中的位置
+
     PIMAGE_THUNK_DATA32 thunk = (PIMAGE_THUNK_DATA32)(buff + fa);
 
     DWORD type;
     DWORD value;
+    DWORD name_fa;
+    PIMAGE_IMPORT_BY_NAME name_data;
 
     while (thunk->u1.Function != 0)
     {
-        type = thunk->u1.Function >> 31;
+        type = thunk->u1.Function >> 31;        // 最高位为导入类型:0-按名称导入,1-按序号导入
         value = thunk->u1.Function & 0xEFFFFFFF;
 
         SP(_T("%08x %08x 类型:%x 值:%08x"), fa, fa + va, type, value);
         tv.hParent = parent;
         item = (HTREEITEM)TreeView_InsertItem(tree, &tv);
 
-        if (0 == type) // 按名称导入
+        if (0 == type) // 0-按名称导入,存的是函数名地址. 1-按序号导入,存的是序号
         {
-            DWORD fa_name = section->PointerToRawData + value - section->VirtualAddress;
+            name_fa = section->PointerToRawData + value - section->VirtualAddress;
 
-            PIMAGE_IMPORT_BY_NAME name = (PIMAGE_IMPORT_BY_NAME)(buff + fa_name);
+            name_data = (PIMAGE_IMPORT_BY_NAME)(buff + name_fa);
 
-            SP(_T("%08x %08x id:%04x 名称:"), fa_name, fa_name + va, name->Hint);
+            SP(_T("%08x %08x id:%04x 名称:"), name_fa, name_fa + va, name_data->Hint);
 
-            int info_len = lstrlen(info);
-            int name_len = strlen(name->Name);
-
-            for (int i = 0; i < (name_len + 1); i++) // 多加1个结尾
-            {
-                info[info_len + i] = name->Name[i];
-            }
+            to_unicode(txt, name_data->Name);
 
             tv.hParent = item;
             TreeView_InsertItem(tree, &tv);
@@ -850,18 +903,18 @@ void insert_import_thunk(HWND tree, HTREEITEM parent, UCHAR *buff,
  * \param   [in]  HWND                      tree                        树句柄
  * \param   [in]  HTREEITEM                 parent                      树节点句柄
  * \param   [in]  UCHAR                     *buff                       PE文件数据
- * \param   [in]  PIMAGE_SECTION_HEADER     section                     头节点
  * \param   [in]  PIMAGE_IMPORT_DESCRIPTOR  import                      头节点
+ * \param   [in]  PIMAGE_SECTION_HEADER     section                     头节点
  * \param   [in]  DWORD                     fa                          文件地址
  * \param   [in]  DWORD                     va                          相对地址
  * \return  无
  */
 void insert_import_library(HWND tree, HTREEITEM parent, UCHAR *buff,
-                           PIMAGE_SECTION_HEADER section,
                            PIMAGE_IMPORT_DESCRIPTOR import,
+                           PIMAGE_SECTION_HEADER section,
                            DWORD fa, DWORD va)
 {
-    DATA name[] = {
+    DATA data_item[] = {
         { 4, _T("输入名称表的地址                  ")},
         { 4, _T("文件创建时间                      ")},
         { 4, _T("被转向API的索引                   ")},
@@ -869,48 +922,48 @@ void insert_import_library(HWND tree, HTREEITEM parent, UCHAR *buff,
         { 4, _T("输入地址表的地址                  ")}
     };
 
-    TCHAR info[512];
-    HTREEITEM item;
+    TCHAR txt[512]    = _T("");
+    HTREEITEM item    = NULL;
+
     TVINSERTSTRUCT tv = {0};
     tv.hParent        = parent;
     tv.hInsertAfter   = TVI_LAST;
     tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    tv.item.pszText   = txt;
 
-    int fa_name = section->PointerToRawData + import->Name - section->VirtualAddress;
+    // 库名称地址在exe文件中的位置
+    int lib_name_fa   = section->PointerToRawData + import->Name - section->VirtualAddress;
 
-    SP(_T("%08x %08x 库名称地址:%08x %08x "), fa, fa + va, fa_name, import->Name);
+    SP(_T("%08x %08x 库名称地址:%08x %08x "), fa, fa + va, lib_name_fa, import->Name);
 
-    char *tmp = (char*)(buff + fa_name);
-    int info_len = lstrlen(info);
-    int name_len = strlen(tmp);
-
-    for (int i = 0; i < (name_len + 1); i++) // 多加1个结尾
-    {
-        info[info_len + i] = tmp[i];
-    }
+    to_unicode(txt, buff + lib_name_fa);
 
     tv.hParent = TreeView_InsertItem(tree, &tv);
 
     DWORD *data = (DWORD*)(buff + fa);
+    TCHAR *name;
+    UCHAR  size;
 
-    for (int i = 0; i < SIZEOF(name); i++)
+    for (int i = 0; i < SIZEOF(data_item); i++)
     {
-        SP(_T("%08x %08x %s :%08x"), fa, fa + va, name[i].name, *data);
+        name = data_item[i].name;
+        size = data_item[i].size;
+
+        SP(_T("%08x %08x %s :%08x"), fa, fa + va, name, *data);
 
         item = TreeView_InsertItem(tree, &tv);
 
         if (i == 0)
         {
-            insert_import_thunk(tree, item, buff, section, import->OriginalFirstThunk, va, tmp);
+            insert_import_thunk(tree, item, buff, section, import->OriginalFirstThunk, va);
         }
         else if (i == 4)
         {
-            insert_import_thunk(tree, item, buff, section, import->FirstThunk, va, tmp);
+            insert_import_thunk(tree, item, buff, section, import->FirstThunk, va);
         }
 
         data++;
-        fa += name[i].size;
+        fa += size;
     }
 }
 
@@ -920,7 +973,7 @@ void insert_import_library(HWND tree, HTREEITEM parent, UCHAR *buff,
  * \param   [in]  UCHAR *buff       PE文件数据
  * \return  无
  */
-void insert_import_info(HWND tree, UCHAR *buff)
+void insert_import_table(HWND tree, UCHAR *buff)
 {
     PIMAGE_DOS_HEADER        dos     = (PIMAGE_DOS_HEADER)buff;
     PIMAGE_NT_HEADERS        nt      = (PIMAGE_NT_HEADERS)(buff + dos->e_lfanew);
@@ -928,16 +981,16 @@ void insert_import_info(HWND tree, UCHAR *buff)
     PIMAGE_SECTION_HEADER    section = (PIMAGE_SECTION_HEADER)(nt + 1);
     PIMAGE_IMPORT_DESCRIPTOR import;
 
-    DWORD fa;   // 文件位置
-    DWORD va = opt->DataDirectory[1].VirtualAddress;
+    DWORD fa;                                           // 导入表在exe文件中的位置
+    DWORD va = opt->DataDirectory[1].VirtualAddress;    // 导入表在内存中的位置
 
     if (0 == va)
     {
-        return; // 没有导出表
+        return; // 没有导入表
     }
 
-    // 查找导出表数据所在节
-    int section_id = search_section(nt, va);
+
+    int section_id = search_section(nt, va);    // 查找导出表数据所在节,一般在.rdata
 
     if (section_id < 0)
     {
@@ -945,18 +998,19 @@ void insert_import_info(HWND tree, UCHAR *buff)
     }
 
     section = &section[section_id];
-    fa = section->PointerToRawData +
-         opt->DataDirectory[1].VirtualAddress -
-         section->VirtualAddress;
-    va -= fa;   // 相对位置
 
-    TCHAR info[512];
-    HTREEITEM item;
+    fa = section->PointerToRawData + opt->DataDirectory[1].VirtualAddress - section->VirtualAddress;
+
+    va -= fa;   // 内存位置与文件位置的偏移
+
+    TCHAR txt[512]    = _T("");
+    HTREEITEM item    = NULL;
+
     TVINSERTSTRUCT tv = {0};
     tv.hParent        = TVI_ROOT;
     tv.hInsertAfter   = TVI_LAST;
     tv.item.mask      = TVIF_TEXT;
-    tv.item.pszText   = info;
+    tv.item.pszText   = txt;
 
 
     SP(_T("%08x %08x 导入表 所在节:%08x %08x %s"), fa, fa + va,
@@ -964,12 +1018,13 @@ void insert_import_info(HWND tree, UCHAR *buff)
 
     item = TreeView_InsertItem(tree, &tv);
 
-    import = (PIMAGE_IMPORT_DESCRIPTOR)(buff + fa);
+    import = (PIMAGE_IMPORT_DESCRIPTOR)(buff + fa); // 导入表头节点
 
     while (import->OriginalFirstThunk != 0)
     {
-        insert_import_library(tree, item, buff, section, import++, fa, va);
+        insert_import_library(tree, item, buff, import, section, fa, va);
         fa += sizeof(IMAGE_IMPORT_DESCRIPTOR);
+        import++;
     }
 }
 
@@ -982,12 +1037,11 @@ void insert_import_info(HWND tree, UCHAR *buff)
 void insert_tv_item(HWND tree, UCHAR* buff)
 {
     TreeView_DeleteAllItems(tree);
-    insert_dos_head(tree, buff);
-    insert_nt_head(tree, buff);
+    insert_dosnt_head(tree, buff);
     insert_section_head(tree, buff);
-    insert_export_info(tree, buff);
-    insert_import_info(tree, buff);
-    insert_reloc_info(tree, buff);
+    insert_export_table(tree, buff);
+    insert_import_table(tree, buff);
+    insert_reloc_table(tree, buff);
 }
 
 void update_treeview(TCHAR *name)
@@ -997,9 +1051,9 @@ void update_treeview(TCHAR *name)
 
     if (NULL == fp)
     {
-        TCHAR info[128];
+        TCHAR txt[128];
         SP(_T("open %s error %d"), name, GetLastError());
-        MessageBox(NULL, info, g_title, MB_ICONEXCLAMATION);
+        MessageBox(NULL, txt, g_title, MB_ICONEXCLAMATION);
     }
 
     fseek(fp, 0, SEEK_END);
@@ -1011,9 +1065,9 @@ void update_treeview(TCHAR *name)
 
     if (buff[0] != 'M' || buff[1] != 'Z')
     {
-        TCHAR info[128];
+        TCHAR txt[128];
         SP(_T("this %s is not pe file"), name);
-        MessageBox(NULL, info, g_title, MB_ICONEXCLAMATION);
+        MessageBox(NULL, txt, g_title, MB_ICONEXCLAMATION);
         return;
     }
 
@@ -1026,7 +1080,7 @@ void update_treeview(TCHAR *name)
  * \param   [in]  WPARAM w 拖拽句柄
  * \return  无
  */
-void wm_dropfiles(WPARAM w)
+void on_dropfiles(WPARAM w)
 {
     HDROP drop = (HDROP)w;
 
@@ -1042,7 +1096,7 @@ void wm_dropfiles(WPARAM w)
  * \param   [in]  LPARAM l   宽高
  * \return  无
  */
-void wm_size(LPARAM l)
+void on_size(LPARAM l)
 {
     int w = LOWORD(l);
     int h = HIWORD(l);
@@ -1055,7 +1109,7 @@ void wm_size(LPARAM l)
  * \param   [in]  HWND wnd 窗体句柄
  * \return  无
  */
-void wm_create(HWND wnd)
+void on_create(HWND wnd)
 {
     g_tree = CreateWindow(WC_TREEVIEW,
                 _T("Tree View"),
@@ -1082,7 +1136,7 @@ void wm_create(HWND wnd)
  * \param   [in]  HWND wnd 窗体句柄
  * \return  无
  */
-void wm_close(HWND wnd)
+void on_close(HWND wnd)
 {
     DestroyWindow(wnd);
 }
@@ -1092,7 +1146,7 @@ void wm_close(HWND wnd)
  * \param   [in]  HWND wnd 窗体句柄
  * \return  无
  */
-void wm_destory(HWND wnd)
+void on_destory(HWND wnd)
 {
     PostQuitMessage(0);
 }
@@ -1109,11 +1163,11 @@ LRESULT CALLBACK window_proc(HWND wnd, UINT msg, WPARAM w, LPARAM l)
 {
     switch(msg)
     {
-        case WM_DROPFILES:   wm_dropfiles(w);       break;
-        case WM_SIZE:        wm_size(l);            break;
-        case WM_CREATE:      wm_create(wnd);        break;
-        case WM_CLOSE:       wm_close(wnd);         return 0;
-        case WM_DESTROY:     wm_destory(wnd);       return 0;
+        case WM_DROPFILES:   on_dropfiles(w);       break;
+        case WM_SIZE:        on_size(l);            break;
+        case WM_CREATE:      on_create(wnd);        break;
+        case WM_CLOSE:       on_close(wnd);         return 0;
+        case WM_DESTROY:     on_destory(wnd);       return 0;
     }
 
     return DefWindowProc(wnd, msg, w, l);
