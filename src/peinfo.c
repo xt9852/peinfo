@@ -18,7 +18,7 @@
 #define SIZEOF(x)               sizeof(x)/sizeof(x[0])
 #define SP(...)                 _stprintf_s(info, SIZEOF(info), __VA_ARGS__)
 
-TCHAR *g_title                  = _T("titlename");
+TCHAR *g_title                  = _T("peinfo");
 HFONT  g_font                   = NULL;
 HWND   g_tree                   = NULL;
 
@@ -1037,7 +1037,18 @@ void wm_dropfiles(WPARAM w)
     update_treeview(name);
 }
 
-#define IDC_TREEVIEW    101
+/**
+ * \brief   改变大小消息处理函数
+ * \param   [in]  LPARAM l   宽高
+ * \return  无
+ */
+void wm_size(LPARAM l)
+{
+    int w = LOWORD(l);
+    int h = HIWORD(l);
+
+    MoveWindow(g_tree, 0, 0, w, h, TRUE);
+}
 
 /**
  * \brief   创建消息处理函数
@@ -1053,7 +1064,7 @@ void wm_create(HWND wnd)
                 0, 50,
                 783, 490,
                 wnd,
-                (HMENU)IDC_TREEVIEW,
+                (HMENU)101,
                 NULL,
                 NULL);
 
@@ -1098,8 +1109,9 @@ LRESULT CALLBACK window_proc(HWND wnd, UINT msg, WPARAM w, LPARAM l)
 {
     switch(msg)
     {
-        case WM_CREATE:      wm_create(wnd);        break;
         case WM_DROPFILES:   wm_dropfiles(w);       break;
+        case WM_SIZE:        wm_size(l);            break;
+        case WM_CREATE:      wm_create(wnd);        break;
         case WM_CLOSE:       wm_close(wnd);         return 0;
         case WM_DESTROY:     wm_destory(wnd);       return 0;
     }
