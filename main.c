@@ -1077,10 +1077,11 @@ void update_treeview(TCHAR *name)
 
 /**
  * \brief   拖拽文件
+ * \param   [in]  HWND wnd 窗体句柄
  * \param   [in]  WPARAM w 拖拽句柄
  * \return  无
  */
-void on_dropfiles(WPARAM w)
+void on_dropfiles(HWND wnd, WPARAM w)
 {
     HDROP drop = (HDROP)w;
 
@@ -1088,6 +1089,7 @@ void on_dropfiles(WPARAM w)
     DragQueryFile(drop, 0, name, MAX_PATH);
     DragFinish(drop);
 
+    SetWindowText(wnd, name);
     update_treeview(name);
 }
 
@@ -1163,7 +1165,7 @@ LRESULT CALLBACK window_proc(HWND wnd, UINT msg, WPARAM w, LPARAM l)
 {
     switch(msg)
     {
-        case WM_DROPFILES:   on_dropfiles(w);       break;
+        case WM_DROPFILES:   on_dropfiles(wnd, w);  break;
         case WM_SIZE:        on_size(l);            break;
         case WM_CREATE:      on_create(wnd);        break;
         case WM_CLOSE:       on_close(wnd);         return 0;
