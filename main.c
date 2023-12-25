@@ -1,7 +1,7 @@
 /**
  * Copyright:   2022, XT Tech. Co., Ltd.
- * File name:   example.c
- * Description: example模块实现
+ * File name:   main.c
+ * Description: 主模块实现
  * Author:      张海涛
  * Version:     0.0.0.1
  * Code:        UTF-8(无BOM)
@@ -1124,8 +1124,6 @@ void on_create(HWND wnd)
                 NULL,
                 NULL);
 
-    SendMessage(g_tree, WM_SETFONT, (WPARAM)g_font, (LPARAM)TRUE);
-
     DragAcceptFiles(wnd, TRUE); // 属性WS_EX_ACCEPTFILES
 }
 
@@ -1183,53 +1181,27 @@ LRESULT CALLBACK window_proc(HWND wnd, UINT msg, WPARAM w, LPARAM l)
  * \param   [in]  int       nCmdShow        显示状态(最小化,最大化,隐藏)
  * \return  int 程序返回值
  */
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
-                   LPSTR lpCmdLine, int nCmdShow)
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-    // 字体
-    LOGFONT lf;
-    lf.lfWeight         = 400;  // 粗细程度,0到1000,正常400，粗体700
-    lf.lfHeight         = 18;   // 高度
-    lf.lfWidth          = 8;    // 宽度
-    lf.lfEscapement     = 0;    // 行角度900为90度
-    lf.lfOrientation    = 0;    // 字符角度
-    lf.lfItalic         = 0;    // 斜体
-    lf.lfUnderline      = 0;    // 下划线
-    lf.lfStrikeOut      = 0;    // 删除线
-    lf.lfOutPrecision   = 0;    // 输出精度
-    lf.lfClipPrecision  = 0;    // 剪辑精度
-    lf.lfQuality        = 0;    // 输出质量
-    lf.lfPitchAndFamily = 0;    // 字符间距和族
-    lf.lfCharSet        = DEFAULT_CHARSET;
-    lstrcpy(lf.lfFaceName, _T("Courier New"));
-    g_font = CreateFontIndirect(&lf);
-
     // 窗体类
-    WNDCLASS wc      = {0};
-    wc.style         = CS_HREDRAW | CS_VREDRAW;     // 类型属性
-    wc.lpfnWndProc   = window_proc;                 // 窗体消息处理函数
-    wc.lpszClassName = _T("class_name");            // 类名称
-    wc.hInstance     = hInstance;                   // 实例
-    wc.hCursor       = LoadCursor(NULL, IDC_CROSS);                     // 鼠标指针
-    wc.hbrBackground = CreateSolidBrush(RGB(240, 240, 240));            // 背景刷
+    WNDCLASS wc = { CS_HREDRAW | CS_VREDRAW, window_proc, 0, 0, hInstance, 0, 0, 0, 0, g_title };
     RegisterClass(&wc);
 
-    // 窗体居中
+    // 窗体大小
     int cx = 800;
     int cy = 600;
-    int x = (GetSystemMetrics(SM_CXSCREEN) - cx) / 2;
-    int y = (GetSystemMetrics(SM_CYSCREEN) - cy) / 2;
 
     // 创建窗体
-    HWND wnd = CreateWindow(wc.lpszClassName,       // 类名称
-                            g_title,                // 窗体名称
-                            WS_OVERLAPPEDWINDOW,    // 窗体属性
-                            x,  y,                  // 窗体位置
-                            cx, cy,                 // 窗体大小
-                            NULL,                   // 父窗句柄
-                            NULL,                   // 菜单句柄
-                            hInstance,              // 实例句柄
-                            NULL);                  // 参数,给WM_CREATE的lParam的CREATESTRUCT
+    HWND wnd = CreateWindow(wc.lpszClassName,                           // 类名称
+                            g_title,                                    // 窗体名称
+                            WS_OVERLAPPEDWINDOW,                        // 窗体属性
+                            (GetSystemMetrics(SM_CXSCREEN) - cx) / 2,   // 窗体位置
+                            (GetSystemMetrics(SM_CYSCREEN) - cy) / 2,   // 窗体居中
+                            cx, cy,                                     // 窗体大小
+                            NULL,                                       // 父窗句柄
+                            NULL,                                       // 菜单句柄
+                            hInstance,                                  // 实例句柄
+                            NULL);                                      // 参数,给WM_CREATE的lParam的CREATESTRUCT
 
     // 显示窗体
     ShowWindow(wnd, SW_SHOWNORMAL);
