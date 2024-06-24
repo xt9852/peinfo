@@ -1,8 +1,9 @@
 /**
  *\file     main.c
+ *\note     UTF-8
  *\author   xt
  *\version  0.0.1
- *\brief             主模块实现, UTF-8(No BOM)
+ *\brief    主模块实现
  *          时间|事件
  *          -|-
  *          2022.02.06|创建文件
